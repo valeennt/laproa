@@ -1,0 +1,1 @@
+- [ ] Usuario cargará sus propias fotos de catálogo (reemplazar ejemplos)
