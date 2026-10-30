@@ -1,3 +1,4 @@
+
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useState, type ChangeEvent, type FormEvent } from "react";
 import { Layout } from "@/components/Layout";
@@ -16,7 +17,7 @@ type Producto = {
 
 const productoVacio = {
   nombre: "",
-  categoria: "camisas",
+  categoria: "",
   precio: "",
   talles: "",
   stock: "0",
@@ -33,9 +34,12 @@ function AdminPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [productos, setProductos] = useState<Producto[]>([]);
+  const [categorias, setCategorias] = useState<string[]>([]);
+  const [nuevaCategoria, setNuevaCategoria] = useState("");
   const [error, setError] = useState("");
   const [mensaje, setMensaje] = useState("");
   const [guardando, setGuardando] = useState<number | null>(null);
+  const [procesandoCategoria, setProcesandoCategoria] = useState(false);
   const [nuevo, setNuevo] = useState(productoVacio);
   const [creando, setCreando] = useState(false);
   const [imagenNueva, setImagenNueva] = useState<File | null>(null);
@@ -91,6 +95,33 @@ function AdminPage() {
     setProductos((data ?? []) as Producto[]);
   }
 
+  async function cargarCategorias() {
+    const { data, error } = await supabase
+      .from("categorias")
+      .select("nombre")
+      .order("nombre");
+
+    if (error) {
+      setError("No se pudieron cargar las categorías: " + error.message);
+      return;
+    }
+
+    const nombres = (data ?? []).map((categoria) => categoria.nombre);
+    setCategorias(nombres);
+
+    setNuevo((actual) => ({
+      ...actual,
+      categoria:
+        actual.categoria && nombres.includes(actual.categoria)
+          ? actual.categoria
+          : nombres[0] ?? "",
+    }));
+  }
+
+  async function actualizarDatos() {
+    await Promise.all([cargarProductos(), cargarCategorias()]);
+  }
+
   async function verificarUsuario() {
     setCargando(true);
     setAutorizado(false);
@@ -116,7 +147,7 @@ function AdminPage() {
 
     setAutorizado(true);
     setCargando(false);
-    await cargarProductos();
+    await actualizarDatos();
   }
 
   useEffect(() => {
@@ -160,6 +191,7 @@ function AdminPage() {
 
     setAutorizado(false);
     setProductos([]);
+    setCategorias([]);
     setMensaje("");
     setError("");
   }
@@ -186,6 +218,96 @@ function AdminPage() {
       ...actuales,
       [id]: archivo,
     }));
+  }
+
+  async function crearCategoria(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setError("");
+    setMensaje("");
+
+    const nombre = nuevaCategoria.trim();
+
+    if (!nombre) {
+      setError("Escribí el nombre de la categoría.");
+      return;
+    }
+
+    if (categorias.some((c) => c.toLowerCase() === nombre.toLowerCase())) {
+      setError("Esa categoría ya existe.");
+      return;
+    }
+
+    setProcesandoCategoria(true);
+
+    try {
+      const { error } = await supabase
+        .from("categorias")
+        .insert({ nombre });
+
+      if (error) throw error;
+
+      setNuevaCategoria("");
+      setNuevo((actual) => ({ ...actual, categoria: nombre }));
+      setMensaje(`Se creó la categoría "${nombre}".`);
+      await cargarCategorias();
+    } catch (e) {
+      setError(
+        "No se pudo crear la categoría: " +
+          (e instanceof Error ? e.message : "Error desconocido."),
+      );
+    } finally {
+      setProcesandoCategoria(false);
+    }
+  }
+
+  async function eliminarCategoria(categoria: string) {
+    const cantidad = productos.filter(
+      (p) => p.categoria === categoria,
+    ).length;
+
+    const confirmar = window.confirm(
+      `¿Seguro que querés eliminar la categoría "${categoria}" y sus ${cantidad} productos? Esta acción no se puede deshacer.`,
+    );
+
+    if (!confirmar) return;
+
+    setError("");
+    setMensaje("");
+    setProcesandoCategoria(true);
+
+    try {
+      const { error: errorProductos } = await supabase
+        .from("productos")
+        .delete()
+        .eq("categoria", categoria);
+
+      if (errorProductos) throw errorProductos;
+
+      const { error: errorCategoria } = await supabase
+        .from("categorias")
+        .delete()
+        .eq("nombre", categoria);
+
+      if (errorCategoria) throw errorCategoria;
+
+      if (nuevo.categoria === categoria) {
+        setNuevo((actual) => ({
+          ...actual,
+          categoria: categorias.find((c) => c !== categoria) ?? "",
+        }));
+      }
+
+      setMensaje(`Se eliminó la categoría "${categoria}" y sus productos.`);
+      await actualizarDatos();
+    } catch (e) {
+      setError(
+        "No se pudo completar la eliminación: " +
+          (e instanceof Error ? e.message : "Error desconocido."),
+      );
+      await actualizarDatos();
+    } finally {
+      setProcesandoCategoria(false);
+    }
   }
 
   async function guardarProducto(producto: Producto) {
@@ -260,6 +382,11 @@ function AdminPage() {
       return;
     }
 
+    if (!nuevo.categoria) {
+      setError("Primero creá o seleccioná una categoría.");
+      return;
+    }
+
     if (
       nuevo.precio.trim() === "" ||
       !Number.isFinite(precio) ||
@@ -304,7 +431,10 @@ function AdminPage() {
       setMensaje(
         `¡Producto "${nuevo.nombre.trim()}" creado correctamente!`,
       );
-      setNuevo({ ...productoVacio });
+      setNuevo({
+        ...productoVacio,
+        categoria: categorias[0] ?? "",
+      });
       setImagenNueva(null);
 
       const selector = document.getElementById(
@@ -417,6 +547,11 @@ function AdminPage() {
     );
   }
 
+  const productosPorCategoria = categorias.map((categoria) => ({
+    nombre: categoria,
+    productos: productos.filter((p) => p.categoria === categoria),
+  }));
+
   return (
     <Layout>
       <main className="mx-auto max-w-7xl px-6 py-10">
@@ -486,6 +621,44 @@ function AdminPage() {
         )}
 
         <section className="mb-8 border bg-background p-5 sm:p-7">
+          <h2 className="font-display text-2xl">Administrar categorías</h2>
+          <p className="mt-1 mb-6 text-sm text-muted-foreground">
+            Creá nuevas categorías para organizar tus productos.
+          </p>
+
+          <form
+            onSubmit={crearCategoria}
+            className="flex flex-wrap gap-3"
+          >
+            <input
+              value={nuevaCategoria}
+              onChange={(e) => setNuevaCategoria(e.target.value)}
+              placeholder="Ej. Buzos"
+              className="min-w-0 flex-1 border bg-background px-3 py-3"
+            />
+
+            <button
+              type="submit"
+              disabled={procesandoCategoria}
+              className="btn-line"
+            >
+              Crear categoría
+            </button>
+          </form>
+
+          <div className="mt-5 flex flex-wrap gap-2">
+            {categorias.map((categoria) => (
+              <span
+                key={categoria}
+                className="border px-3 py-2 text-sm"
+              >
+                {categoria}
+              </span>
+            ))}
+          </div>
+        </section>
+
+        <section className="mb-8 border bg-background p-5 sm:p-7">
           <h2 className="font-display text-2xl">Agregar producto</h2>
           <p className="mt-1 mb-6 text-sm text-muted-foreground">
             Completá los datos y elegí una foto desde tu computadora.
@@ -512,15 +685,19 @@ function AdminPage() {
             <label className="grid gap-2 text-sm">
               Categoría
               <select
+                required
                 value={nuevo.categoria}
                 onChange={(e) =>
                   setNuevo({ ...nuevo, categoria: e.target.value })
                 }
                 className="w-full border bg-background px-3 py-3"
               >
-                <option value="camisas">Camisas</option>
-                <option value="pantalones">Pantalones</option>
-                <option value="abrigos">Abrigos</option>
+                <option value="">Seleccioná una categoría</option>
+                {categorias.map((categoria) => (
+                  <option key={categoria} value={categoria}>
+                    {categoria}
+                  </option>
+                ))}
               </select>
             </label>
 
@@ -599,11 +776,17 @@ function AdminPage() {
             <div className="sm:col-span-2">
               <button
                 type="submit"
-                disabled={creando}
+                disabled={creando || categorias.length === 0}
                 className="btn-line"
               >
                 {creando ? "Creando producto..." : "Agregar producto"}
               </button>
+
+              {categorias.length === 0 && (
+                <p className="mt-2 text-sm text-muted-foreground">
+                  Primero tenés que crear una categoría.
+                </p>
+              )}
             </div>
           </form>
         </section>
@@ -615,170 +798,208 @@ function AdminPage() {
                 Productos y stock
               </h2>
               <p className="mt-1 text-sm text-muted-foreground">
-                Modificá los datos y elegí una foto si querés cambiarla.
-                Después guardá los cambios.
+                Abrí cada categoría para ver y modificar sus productos.
               </p>
             </div>
 
             <button
-              onClick={() => void cargarProductos()}
+              onClick={() => void actualizarDatos()}
               className="btn-line"
             >
               Actualizar lista
             </button>
           </div>
 
-          {productos.length === 0 ? (
+          {categorias.length === 0 ? (
             <p className="py-8 text-sm text-muted-foreground">
-              No hay productos para mostrar.
+              Todavía no hay categorías creadas.
             </p>
           ) : (
-            <div className="grid gap-5">
-              {productos.map((producto) => (
-                <article
-                  key={producto.id}
-                  className="border p-4 sm:p-5"
+            <div className="grid gap-4">
+              {productosPorCategoria.map((grupo) => (
+                <details
+                  key={grupo.nombre}
+                  className="border"
+                  open
                 >
-                  <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
-                    <div className="flex items-start gap-4">
-                      {producto.imagen_url ? (
-                        <img
-                          src={producto.imagen_url}
-                          alt={producto.nombre}
-                          className="h-24 w-20 border object-cover"
-                        />
-                      ) : (
-                        <div className="flex h-24 w-20 items-center justify-center border text-xs text-muted-foreground">
-                          Sin foto
-                        </div>
-                      )}
+                  <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-4">
+                    <span className="font-display text-xl">
+                      {grupo.nombre}
+                      <span className="ml-3 text-sm text-muted-foreground">
+                        ({grupo.productos.length} productos)
+                      </span>
+                    </span>
+                    <span className="text-xl">⌄</span>
+                  </summary>
 
-                      <div>
-                        <h3 className="font-display text-xl">
-                          {producto.nombre}
-                        </h3>
-                        <p className="mt-1 text-xs uppercase tracking-wider text-muted-foreground">
-                          {producto.categoria}
-                        </p>
-                      </div>
+                  <div className="border-t p-4">
+                    <div className="mb-5 flex justify-end">
+                      <button
+                        type="button"
+                        className="btn-line"
+                        disabled={procesandoCategoria}
+                        onClick={() => void eliminarCategoria(grupo.nombre)}
+                      >
+                        Eliminar categoría
+                      </button>
                     </div>
 
-                    <label className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={producto.activo}
-                        onChange={(e) =>
-                          cambiarProducto(
-                            producto.id,
-                            "activo",
-                            e.target.checked,
-                          )
-                        }
-                      />
-                      Producto activo
-                    </label>
-                  </div>
+                    {grupo.productos.length === 0 ? (
+                      <p className="py-5 text-sm text-muted-foreground">
+                        Esta categoría todavía no tiene productos.
+                      </p>
+                    ) : (
+                      <div className="grid gap-5">
+                        {grupo.productos.map((producto) => (
+                          <article
+                            key={producto.id}
+                            className="border p-4 sm:p-5"
+                          >
+                            <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+                              <div className="flex items-start gap-4">
+                                {producto.imagen_url ? (
+                                  <img
+                                    src={producto.imagen_url}
+                                    alt={producto.nombre}
+                                    className="h-24 w-20 border object-cover"
+                                  />
+                                ) : (
+                                  <div className="flex h-24 w-20 items-center justify-center border text-xs text-muted-foreground">
+                                    Sin foto
+                                  </div>
+                                )}
 
-                  <label className="mb-4 grid gap-2 text-sm">
-                    Cambiar foto
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={(e) =>
-                        elegirImagenProducto(producto.id, e)
-                      }
-                      className="w-full border bg-background px-3 py-3"
-                    />
+                                <div>
+                                  <h3 className="font-display text-xl">
+                                    {producto.nombre}
+                                  </h3>
+                                  <p className="mt-1 text-xs uppercase tracking-wider text-muted-foreground">
+                                    {producto.categoria}
+                                  </p>
+                                </div>
+                              </div>
 
-                    {imagenesProducto[producto.id] && (
-                      <span className="text-xs text-muted-foreground">
-                        Nueva foto: {imagenesProducto[producto.id]?.name}
-                      </span>
+                              <label className="flex items-center gap-2 text-sm">
+                                <input
+                                  type="checkbox"
+                                  checked={producto.activo}
+                                  onChange={(e) =>
+                                    cambiarProducto(
+                                      producto.id,
+                                      "activo",
+                                      e.target.checked,
+                                    )
+                                  }
+                                />
+                                Producto activo
+                              </label>
+                            </div>
+
+                            <label className="mb-4 grid gap-2 text-sm">
+                              Cambiar foto
+                              <input
+                                type="file"
+                                accept="image/*"
+                                onChange={(e) =>
+                                  elegirImagenProducto(producto.id, e)
+                                }
+                                className="w-full border bg-background px-3 py-3"
+                              />
+
+                              {imagenesProducto[producto.id] && (
+                                <span className="text-xs text-muted-foreground">
+                                  Nueva foto: {imagenesProducto[producto.id]?.name}
+                                </span>
+                              )}
+                            </label>
+
+                            <div className="grid gap-4 sm:grid-cols-3">
+                              <label className="grid gap-2 text-sm">
+                                Precio ($)
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  value={producto.precio}
+                                  onChange={(e) =>
+                                    cambiarProducto(
+                                      producto.id,
+                                      "precio",
+                                      e.target.value === ""
+                                        ? 0
+                                        : Number(e.target.value),
+                                    )
+                                  }
+                                  className="w-full border bg-background px-3 py-2"
+                                />
+                              </label>
+
+                              <label className="grid gap-2 text-sm">
+                                Talles
+                                <input
+                                  value={producto.talles ?? ""}
+                                  onChange={(e) =>
+                                    cambiarProducto(
+                                      producto.id,
+                                      "talles",
+                                      e.target.value,
+                                    )
+                                  }
+                                  placeholder="Ej. S - XXL"
+                                  className="w-full border bg-background px-3 py-2"
+                                />
+                              </label>
+
+                              <label className="grid gap-2 text-sm">
+                                Stock (unidades)
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="1"
+                                  value={producto.stock}
+                                  onChange={(e) =>
+                                    cambiarProducto(
+                                      producto.id,
+                                      "stock",
+                                      e.target.value === ""
+                                        ? 0
+                                        : Number(e.target.value),
+                                    )
+                                  }
+                                  className="w-full border bg-background px-3 py-2"
+                                />
+                              </label>
+                            </div>
+
+                            <div className="mt-5 flex flex-wrap justify-end gap-3">
+                              <button
+                                type="button"
+                                className="btn-line"
+                                disabled={guardando === producto.id}
+                                onClick={() => void eliminarProducto(producto)}
+                              >
+                                {guardando === producto.id
+                                  ? "Procesando..."
+                                  : "Eliminar producto"}
+                              </button>
+
+                              <button
+                                type="button"
+                                className="btn-line"
+                                disabled={guardando === producto.id}
+                                onClick={() => void guardarProducto(producto)}
+                              >
+                                {guardando === producto.id
+                                  ? "Guardando..."
+                                  : "Guardar cambios"}
+                              </button>
+                            </div>
+                          </article>
+                        ))}
+                      </div>
                     )}
-                  </label>
-
-                  <div className="grid gap-4 sm:grid-cols-3">
-                    <label className="grid gap-2 text-sm">
-                      Precio ($)
-                      <input
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        value={producto.precio}
-                        onChange={(e) =>
-                          cambiarProducto(
-                            producto.id,
-                            "precio",
-                            e.target.value === ""
-                              ? 0
-                              : Number(e.target.value),
-                          )
-                        }
-                        className="w-full border bg-background px-3 py-2"
-                      />
-                    </label>
-
-                    <label className="grid gap-2 text-sm">
-                      Talles
-                      <input
-                        value={producto.talles ?? ""}
-                        onChange={(e) =>
-                          cambiarProducto(
-                            producto.id,
-                            "talles",
-                            e.target.value,
-                          )
-                        }
-                        placeholder="Ej. S - XXL"
-                        className="w-full border bg-background px-3 py-2"
-                      />
-                    </label>
-
-                    <label className="grid gap-2 text-sm">
-                      Stock (unidades)
-                      <input
-                        type="number"
-                        min="0"
-                        step="1"
-                        value={producto.stock}
-                        onChange={(e) =>
-                          cambiarProducto(
-                            producto.id,
-                            "stock",
-                            e.target.value === ""
-                              ? 0
-                              : Number(e.target.value),
-                          )
-                        }
-                        className="w-full border bg-background px-3 py-2"
-                      />
-                    </label>
                   </div>
-
-                  <div className="mt-5 flex flex-wrap justify-end gap-3">
-                    <button
-                      type="button"
-                      className="btn-line"
-                      disabled={guardando === producto.id}
-                      onClick={() => void eliminarProducto(producto)}
-                    >
-                      {guardando === producto.id
-                        ? "Procesando..."
-                        : "Eliminar producto"}
-                    </button>
-
-                    <button
-                      type="button"
-                      className="btn-line"
-                      disabled={guardando === producto.id}
-                      onClick={() => void guardarProducto(producto)}
-                    >
-                      {guardando === producto.id
-                        ? "Guardando..."
-                        : "Guardar cambios"}
-                    </button>
-                  </div>
-                </article>
+                </details>
               ))}
             </div>
           )}
